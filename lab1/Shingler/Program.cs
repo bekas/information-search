@@ -12,19 +12,17 @@ namespace Shingler
         static void Main(string[] args)
         {
             bool run = true;
-            Shingler shingler = new Shingler();
-            SuperShingler superShingler = new SuperShingler();
+
             MegaShingler megaShingler = new MegaShingler();
             while (run)
             {
                 string text1 = LoadText("Файл №1> ");
                 string text2 = LoadText("Файл №2> ");
-                var res = shingler.Compare(text1, text2);
-                Console.WriteLine("Совпадение шинглов (%): " + res * 100);
-                res = superShingler.Compare(text1, text2);
-                Console.WriteLine("Совпадение супер шинглов (кол-во): " + res);
-                res = megaShingler.Compare(text1, text2);
-                Console.WriteLine("Совпадение мега шинглов (кол-во): " + res);
+                megaShingler.Compare(text1, text2);
+                
+                Console.WriteLine("Совпадение шинглов (%): " + megaShingler.ShinRes * 100);
+                Console.WriteLine("Совпадение супер шинглов (кол-во): " + megaShingler.SuperShinRes);
+                Console.WriteLine("Совпадение мега шинглов (кол-во): " + megaShingler.MegaShinRes);
             }
 
         }

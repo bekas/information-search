@@ -8,21 +8,34 @@ namespace Shingler
 {
     class MegaShingler:SuperShingler
     {
+        public double MegaShinRes { get; set; }
+        public List<List<int>> Mega1 { get; set; }
+        public List<List<int>> Mega2 { get; set; }
+
         override public double Compare(string text1, string text2, int hashCount = 84, int shingleSize = 10)
         {
-            var mega1 = GetMegaShingles(GetSuperShingles(CalcMinHashesFromText(text1, hashCount, shingleSize)));
-            var mega2 = GetMegaShingles(GetSuperShingles(CalcMinHashesFromText(text2, hashCount, shingleSize)));
+            base.Compare(text1, text2, hashCount, shingleSize);
+            Mega1 = GetMegaShingles(Super1);
+            Mega2 = GetMegaShingles(Super2);
+
+            return CalcMegaSim();
+        }
+
+
+        protected double CalcMegaSim()
+        {
             double sim = 0;
 
-            for (int i = 0; i < mega1.Count; i++)
+            for (int i = 0; i < Mega1.Count; i++)
             {
-                int k = CompareHashes(mega1[i], mega2[i]);
-                if (k == mega1[i].Count)
+                int k = CompareHashes(Mega1[i], Mega2[i]);
+                if (k == Mega1[i].Count)
                 {
                     sim += 1;
                 }
             }
 
+            MegaShinRes = sim;
             return sim;
         }
 

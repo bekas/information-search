@@ -8,12 +8,22 @@ namespace Shingler
 {
     class Shingler
     {
+        public double ShinRes { get; set; }
+        public List<int> Hashes1 { get; set; }
+        public List<int> Hashes2 { get; set; }
+
         virtual public double Compare(string text1, string text2, int hashCount = 84, int shingleSize = 5)
         {
-            var hashes1 = CalcMinHashesFromText(text1,hashCount,shingleSize);
-            var hashes2 = CalcMinHashesFromText(text2, hashCount, shingleSize);
-            double sim = CompareHashes(hashes1,hashes2);
+            Hashes1 = CalcMinHashesFromText(text1, hashCount, shingleSize);
+            Hashes2 = CalcMinHashesFromText(text2, hashCount, shingleSize);
+            return CalcSim(hashCount);
+        }
+
+        protected double CalcSim(int hashCount) 
+        {
+            double sim = CompareHashes(Hashes1, Hashes2);
             sim /= (double)hashCount;
+            ShinRes = sim;
             return sim;
         }
 
