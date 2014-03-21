@@ -1,0 +1,766 @@
+﻿Пишем веб сервис на Go (часть вторая) tutorial
+Go*, Программирование*, Веб-разработка*
+Продолжение статьи о том, как написать небольшое полнофункциональное приложение на Go.
+
+В первой части мы реализовали REST API и научились собирать приходящие HTTP запросы. В этой части, мы покроем наше приложение тестами, добавим красивый веб-интерфейс на основе AngularJS и Bootstrap, и внедрим ограничение доступа для разных пользователей.
+
+
+В этой части нас ждут следующие этапы:
+Шаг четвёртый. А как же тесты?
+Шаг пятый— украшательства и веб-интерфейс;
+Шаг шестой. Добавляем немного приватности.
+Шаг седьмой. Очищаем ненужное;
+Шаг восьмой. Используем Redis для хранения.
+
+
+Шаг четвёртый. А как же тесты?
+
+Любое приложение следует покрывать тестами, какого бы размера оно ни было.В Go существует большое количество встроенных инструментов для работы с тестами. Можно писать как обычные юнит-тесты (unit tests), так и, например, тесты на производительность (benchmark tests). Так же инструментарий позволяет посмотреть покрытие кода тестами.
+
+Базовый пакет для работы с тестами — это testing. Два основных типа здесь — T для обычных юнит тестов и B для нагрузочных тестов. Тесты в Go пишутся в том же пакете, что и основная программа, с добавлением суффикса _test. Поэтому любые приватные структуры данных, доступные внутри пакета, доступны и внутри тестов (так же верно, что тесты имеют общую глобальную область видимости между собой). При компиляции основной программы тестовые файлы игнорируются.
+
+Помимо базового пакета testing, существует большое количество сторонних библиотек, помогающих упростить написание тестов либо позволяющих писать в том или ином стиле (даже в стиле BDD). Вот, например, хорошая вводная статья о том, как писать на Go в стиле TDD.
+
+На GitHub есть табличка сравнения тестовых библиотек, среди которых есть такие монстры, как goconvey, предоставляющий ещё и веб-интерфейс, и взаимодействие с системой, например уведомления о прохождении тестов. Но, дабы не усложнять, для нашего проекта мы возьмём небольшую библиотеку testify, добавляющую лишь немного примитивов для проверки условий и создания mock объектов.
+
+Загрузим код для четвёртого шага:
+
+git checkout step-4
+
+Начнём с написания тестов к моделям. Создадим файл models_test.go. Чтобы быть обнаруженными утилитой go test, функции с тестами должны удовлетворять следующему шаблону:
+
+func TestXxx(*testing.T)
+
+Напишем наш первый тест, который будет проверять правильное создание объекта Bin:
+
+func TestNewBin(t *testing.T) {
+     now := time.Now().Unix()
+     bin := NewBin()
+     if assert.NotNil(t, bin) {
+          assert.Equal(t, len(bin.Name), 6)
+          assert.Equal(t, bin.RequestCount, 0)
+          assert.Equal(t, bin.Created, bin.Updated)
+          assert.True(t, bin.Created < (now+1))
+          assert.True(t, bin.Created > (now-1))
+     }
+}
+
+Все методы проверки в testify принимают первым параметром объект *testing.T.
+Далее мы тестируем все сценарии, не забывая про ошибочные пути и пограничные значения. Я не буду приводить код всех тестов в статье, так как их достаточно много, и вы можете ознакомиться с ними в репозитории, затрону лишь самые интересные моменты.
+
+Обратим внимание на файл api_test.go, в нём мы тестируем наше REST API. Чтобы не зависеть от реализаций хранилища наших данных, добавляем mock объект, имплементирующий поведение интерфейса Storage. Делаем мы это при помощи mock пакета testify. Он предоставляет механизм для лёгкого написания mock объектов, которые потом можно использовать вместо реальных объектов при написании тестов.
+
+Вот его код:
+
+type MockedStorage struct{
+     mock.Mock
+}
+
+func (s *MockedStorage) CreateBin(_ *Bin) error {
+     args := s.Mock.Called()
+     return args.Error(0)
+}
+
+func (s *MockedStorage) UpdateBin(bin *Bin) error {
+     args := s.Mock.Called(bin)
+     return args.Error(0)
+}
+
+func (s *MockedStorage) LookupBin(name string) (*Bin, error) {
+     args := s.Mock.Called(name)
+     return args.Get(0).(*Bin), args.Error(1)
+}
+
+func (s *MockedStorage) LookupBins(names []string) ([]*Bin, error) {
+     args := s.Mock.Called(names)
+     return args.Get(0).([]*Bin), args.Error(1)
+}
+
+func (s *MockedStorage) LookupRequest(binName, id string) (*Request, error) {
+     args := s.Mock.Called(binName, id)
+     return args.Get(0).(*Request), args.Error(1)
+}
+
+func (s *MockedStorage) CreateRequest(bin *Bin, req *Request) error {
+     args := s.Mock.Called(bin)
+     return args.Error(0)
+}
+
+func (s *MockedStorage) LookupRequests(binName string, from, to int) ([]*Request, error) {
+     args := s.Mock.Called(binName, from, to)
+     return args.Get(0).([]*Request), args.Error(1)
+}
+
+Далее в самих тестах, при создании API, мы инжектим наш mock объект:
+
+        req, _ := http.NewRequest("GET", "/api/v1/bins/", nil)
+        api = GetApi()
+        mockedStorage := &MockedStorage{}
+        api.MapTo(mockedStorage, (*Storage)(nil))
+        res = httptest.NewRecorder()
+        mockedStorage.On("LookupBins", []string{}).Return([]*Bin(nil), errors.New("Storage error"))
+        api.ServeHTTP(res, req)
+        mockedStorage.AssertExpectations(t)
+        if assert.Equal(t, res.Code, 500) {
+            assert.Contains(t, res.Body.String(), "Storage error")
+        }
+
+В тесте мы описываем ожидаемые запросы к mock объекту и нужные нам ответы на них. Поэтому в тот момент, когда мы внутри метода mock объекта вызываем метод s.Mock.Called(names), он пытается найти соответствие заданных параметров и названия метода, а когда мы возвращаем args.Get(0) — возвращается первый аргумент, переданный в Return, в данном случае realBin. Помимо метода Get, возвращающего объект типа interface{}, есть вспомогательные методы Int, String, Bool, Error, преобразующие interface в нужный нам тип. Метод mockedStorage.AssertExpectations(t) проверяет, все ли ожидаемые методы были вызваны нами при тестировании.
+
+Ещё здесь интересен объект ResponseRecorder создаваемый в httptest.NewRecorder, он имплементирует поведение ResponseWriter и позволяет нам, не выводя никуда данные запроса, посмотреть, что в итоге вернётся (код ответа, заголовки и тело ответа).
+
+Чтобы запустить тесты, нужно выполнить команду:
+
+> go test ./src/skimmer
+ok  	_/.../src/skimmer	0.032s
+
+У команды запуска тестов есть большое количество флагов, ознакомиться с ними можно вот так:
+
+> go help testflag
+
+Вы можете поиграться с ними, но сейчас нас интересует следующая команда (актуально для Go версии 1.2):
+
+> go test ./src/skimmer/ -coverprofile=c.out && go tool cover -html=c.out
+
+Если у вас не заработало, возможно нужно для начала установить coverage tool
+
+> go get code.google.com/p/go.tools/cmd/cover
+
+Эта команда выполняет тесты и сохраняет профиль покрытия тестами в файл c.out, а затем утилитой go tool создаётся html версия, которая открывается в браузере.
+Покрытие тестами в Go, реализовано достаточно интересно. Перед тем как скомпилировать код, изменяются исходные файлы, в исходный код вставляются счётчики. Например, такой вот код:
+
+func Size(a int) string {
+    switch {
+    case a < 0:
+        return "negative"
+    case a == 0:
+        return "zero"
+    }
+    return "enormous"
+}
+
+превращается вот в такой:
+
+func Size(a int) string {
+    GoCover.Count[0] = 1
+    switch {
+    case a < 0:
+        GoCover.Count[2] = 1
+        return "negative"
+    case a == 0:
+        GoCover.Count[3] = 1
+        return "zero"
+    }
+    GoCover.Count[1] = 1
+    return "enormous"
+}
+
+Так же есть возможность, показывать не просто покрытие, но и сколько раз каждый участок кода подвергается тестированию. Как всегда, подробнее можно прочитать в документации.
+
+Теперь, когда у нас есть полноценное REST API, да ещё и покрытое тестами, можно приступать к украшательствам и построению веб-интерфейса.
+
+Шаг пятый — украшательства и веб-интерфейс.
+
+В поставке Go есть полноценная библиотека для работы с html шаблонами, но мы будем делать так называемое одностраничное приложение, работающее напрямую с API через javascript. Поможет нам в этом AngularJS.
+
+Обновляем код для нового шага:
+
+> git checkout step-5
+
+Как было упомянуто ещё в первой главе, в Martini есть хендлер для раздачи статики, по умолчанию он раздаёт статические файлы из директории public. Положим туда нужные там js и css библиотеки. Описывать работу фронтенда я буду, так как это не является целью нашей статьи, вы можете самостоятельно посмотреть в исходные файлы, для людей, знакомых с angular, там всё достаточно просто.
+
+Для вывода главной страницы мы добавим отдельный обработчик:
+
+    api.Get("**", func(r render.Render){
+            r.HTML(200, "index", nil)
+        })
+
+
+Glob символы ** говорят, что для любого адреса будет выдаваться файл index.html. Для правильной работы с шаблонами мы добавили при создании Renderer опции, указывающие откуда брать шаблоны. Плюс, чтобы не было конфликтов с angular шаблонами, переназначили {{ }} на {[{ }]}.
+
+    api.Use(render.Renderer(render.Options{
+        Directory: "public/static/views",
+        Extensions: []string{".html"},
+        Delims: render.Delims{"{[{", "}]}"},
+    }))
+
+
+Помимо этого, в модель Bin были добавлены поля Сolor (три байта, хранящие RGB значение цвета) и Favicon (data uri картинка, нужно цвета), генерируемые случайным образом при создании объекта, чтобы различать разные bin объекты по цветам.
+
+type Bin struct {
+...
+    Color		 [3]byte `json:"color"`
+    Favicon      string  `json:"favicon"`
+}
+
+func NewBin() *Bin {
+    color:= RandomColor()
+    bin := Bin{
+...
+        Color:		  color,
+        Favicon:      Solid16x16gifDatauri(color),
+    }
+...
+}
+
+Теперь у нас почти полнофункциональное веб-приложение, можно его запустить:
+
+> go run ./src/main.go
+
+И открыть в браузере (http://127.0.0.1:3000), чтобы поиграться.
+
+К сожалению, пока ещё у приложения существуют две проблемы: после завершения работы программы все данные теряются и у нас нет никакого разделения по пользователям, все видят одно и тоже. Чтож, займёмся этим.
+
+Шаг шестой. Добавляем немного приватности.
+
+Загрузим код для шестого шага:
+
+> git checkout step-6
+
+Отделять пользователей друг от друга мы будем при помощи сессий. Для начала выберем где их хранить. Сессии в martini-contrib основаны на реализации сессий web библиотеки gorilla.
+Gorilla — это набор инструментов для реализации веб-фреймворков. Все эти инструменты слабо связаны между собой, что позволяет брать любую часть и встраивать к себе.
+
+Это позволяет нам использовать уже реализованные в gorilla хранилища. Наше будет на основе cookie.
+
+Создадим хранилище сессии:
+
+func GetApi(config *Config) *martini.ClassicMartini {
+...
+    store := sessions.NewCookieStore([]byte(config.SessionSecret))
+...
+
+Функция NewCookieStore принимает в качестве параметров пары ключей, первый ключ в паре нужен для аутентификации, а второй для шифрования. Второй ключ можно пропускать. Чтобы иметь возможность ротации ключей без потери сессий, можно использовать несколько пар ключей. При создании сессии будет использоваться ключи первой пары, но при проверке данных задействуются все ключи по порядку, начиная с первой пары.
+
+Так как нам нужны разные ключи для приложений, вынесем этот параметр в объект Config, который в дальнейшем поможет нам настраивать приложение исходя из параметров окружения или флагов запуска.
+
+Добавим в наше API промежуточный обработчик, добавляющий работу с сессиями:
+
+// Sessions is a Middleware that maps a session.Session service into the Martini handler chain.
+// Sessions can use a number of storage solutions with the given store.
+func Sessions(name string, store Store) martini.Handler {
+    return func(res http.ResponseWriter, r *http.Request, c martini.Context, l *log.Logger) {
+        // Map to the Session interface
+        s := &session{name, r, l, store, nil, false}
+        c.MapTo(s, (*Session)(nil))
+        // Use before hook to save out the session
+        rw := res.(martini.ResponseWriter)
+        rw.Before(func(martini.ResponseWriter) {
+            if s.Written() {
+                check(s.Session().Save(r, res), l)
+            }
+        })
+...
+
+        c.Next()
+    }
+}
+
+Как видно из кода, сессия создаётся на каждый запрос и добавляется в контекст запроса. По окончании запроса, прямо перед тем, как будут записаны данные из буфера, происходит сохранение данных сессии, если они были изменены.
+
+Теперь перепишем нашу историю (которая раньше была просто слайсом), файл history.go:
+
+type History interface {
+    All() []string
+    Add(string)
+}
+
+type SessionHistory struct {
+    size    int
+    name    string
+    session sessions.Session
+    data    []string
+}
+
+func (history *SessionHistory) All() []string {
+    if history.data == nil {
+        history.load()
+    }
+    return history.data
+}
+
+func (history *SessionHistory) Add(name string) {
+    if history.data == nil {
+        history.load()
+    }
+    history.data = append(history.data, "")
+    copy(history.data[1:], history.data)
+    history.data[0] = name
+    history.save()
+}
+
+func (history *SessionHistory) save() {
+    size := history.size
+    if size > len(history.data){
+        size = len(history.data)
+    }
+    history.session.Set(history.name, history.data[:size])
+}
+
+func (history *SessionHistory) load() {
+    sessionValue := history.session.Get(history.name)
+    history.data = []string{}
+    if sessionValue != nil {
+        if values, ok := sessionValue.([]string); ok {
+            history.data = append(history.data, values...)
+        }
+    }
+
+}
+
+func NewSessionHistoryHandler(size int, name string) martini.Handler {
+    return func(c martini.Context, session sessions.Session) {
+        history := &SessionHistory{size: size, name: name, session: session}
+        c.MapTo(history, (*History)(nil))
+    }
+}
+
+В методе NewSessionHistoryHandler мы создаём объект SessionHistory, имплементирующий интерфейс History (описывающий добавление и запрос всех объектов истории), и затем добавляем его в контекст каждого запроса. У объекта SessionHistory есть вспомогательные методы load и save, загружающие и сохраняющие данные в сессию. Причём загрузка данных из сессии производится только по требованию. Теперь во всех методах API, где раньше использовался слайс history будет использоваться новый объект типа History.
+
+С этого момента у каждого пользователя будет отображаться своя собственная история Bin объектов, но по прямой ссылке мы всё так же можем посмотреть любой Bin. Исправим это, добавив возможность создавать приватные Bin объекты.
+
+Создадим в Bin два новых поля:
+
+type Bin struct {
+...
+    Private      bool    `json:"private"`
+    SecretKey    string  `json:"-"`
+}
+
+В поле SecretKey будет хранится ключ, дающий доступ к приватным Bin (тем, где флаг Private проставлен в true). Добавим так же метод, который делает наш объект приватным:
+
+func (bin *Bin) SetPrivate() {
+    bin.Private = true
+    bin.SecretKey = rs.Generate(32)
+}
+
+Для того, чтобы создавать приватные Bin, наш фронтенд, при создании объекта, будет присылать json объект с флагом private. Чтобы разбирать приходящие json, мы написали небольшой метод DecodeJsonPayload, читающий тело запроса и распаковывающий его в нужную нам структуру:
+
+func DecodeJsonPayload(r *http.Request, v interface{}) error {
+    content, err := ioutil.ReadAll(r.Body)
+    r.Body.Close()
+    if err != nil {
+        return err
+    }
+    err = json.Unmarshal(content, v)
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
+Изменим теперь API, чтобы реализовать новое поведение:
+
+    api.Post("/api/v1/bins/", func(r render.Render, storage Storage, history History, session sessions.Session, req *http.Request){
+            payload := Bin{}
+            if err := DecodeJsonPayload(req, &payload); err != nil {
+                r.JSON(400, ErrorMsg{fmt.Sprintf("Decoding payload error: %s", err)})
+                return
+            }
+            bin := NewBin()
+            if payload.Private {
+                bin.SetPrivate()
+            }
+            if err := storage.CreateBin(bin); err == nil {
+                history.Add(bin.Name)
+                if bin.Private {
+                    session.Set(fmt.Sprintf("pr_%s", bin.Name), bin.SecretKey)
+                }
+                r.JSON(http.StatusCreated, bin)
+            } else {
+                r.JSON(http.StatusInternalServerError, ErrorMsg{err.Error()})
+            }
+        })
+
+Сначала мы создаём объект payload типа Bin, поля которого будут заполняться значениями в функции DecodeJsonPayload из тела запроса. После этого, если во входящих данных установлена опция «private», мы делаем наш bin приватным. Далее, для приватных объектов мы сохраняем значение ключа в сессию session.Set(fmt.Sprintf("pr_%s", bin.Name), bin.SecretKey). Теперь нужно изменить другие методы API так, чтобы они проверяли существование ключа в сессии для приватных Bin объектов. 
+
+Делается это примерно вот так:
+
+    api.Get("/api/v1/bins/:bin", func(r render.Render, params martini.Params, session sessions.Session, storage Storage){
+            if bin, err := storage.LookupBin(params["bin"]); err == nil{
+                if bin.Private && bin.SecretKey != session.Get(fmt.Sprintf("pr_%s", bin.Name)){
+                    r.JSON(http.StatusForbidden, ErrorMsg{"The bin is private"})
+                } else {
+                    r.JSON(http.StatusOK, bin)
+                }
+            } else {
+                r.JSON(http.StatusNotFound, ErrorMsg{err.Error()})
+            }
+        })
+
+По аналогии сделано и в других методах. Некоторые тесты так же были исправлены, чтобы учитывать новое поведение, конкретные изменения можно посмотреть в коде.
+
+Если запустить сейчас наше приложение в разных браузерах или в инкогнито режиме, можно убедиться, что история различается, а к приватным Bin объектам доступ имеет только тот браузер, в котором он создан.
+
+Всё хорошо, но сейчас все объекты в нашем хранилище живут почти вечно, что наверное не правильно, так как память вечной быть не может, поэтому попробуем ограничить время их жизни.
+
+Шаг седьмой. Очищаем ненужное.
+
+
+Загрузим код седьмого шага:
+
+git checkout step-7
+
+Добавим в структуру базового хранилища ещё одно поле:
+
+type BaseStorage struct {
+...
+    binLifetime		  int64
+}
+
+В нём будет хранится максимальное время жизни объекта Bin и сопутствующих ему запросов. Теперь перепишем наше хранилище в памяти — memory.go. Основной метод для очистки всех binRecords не обновлявшихся больше чем binLifetime секунд:
+
+func (storage *MemoryStorage) clean() {
+    storage.Lock()
+    defer storage.Unlock()
+    now := time.Now().Unix()
+    for name, binRecord := range storage.binRecords {
+        if binRecord.bin.Updated < (now - storage.binLifetime) {
+            delete(storage.binRecords, name)
+        }
+    }
+}
+
+Так же добавим в тип MemoryStorage таймер и методы для работы с ним:
+
+type MemoryStorage struct {
+...
+    cleanTimer *time.Timer
+}
+
+func (storage *MemoryStorage) StartCleaning(timeout int) {
+    defer func(){
+        storage.cleanTimer = time.AfterFunc(time.Duration(timeout) * time.Second, func(){storage.StartCleaning(timeout)})
+    }()
+    storage.clean()
+}
+
+func (storage *MemoryStorage) StopCleaning() {
+    if storage.cleanTimer != nil {
+        storage.cleanTimer.Stop()
+    }
+}
+
+
+Метод пакета time AfterFunc запускает в отдельной горутине заданную функцию (она обязательно должна быть без параметров, поэтому воспользуемся здесь замыканием для передачи timeout) после таймаута, типа time.Duration, переданного в первом аргументе.
+
+Для горизонтального масштабирования нашего приложения, нужно будет запускать его на разных серверах, поэтому нам потребуется отдельное хранилище для наших данных. Возьмём для примера — Redis.
+
+Шаг восьмой. Используем Redis для хранения.
+
+Официальная документация по Redis советует нам обширный список клиентов для Go. На момент написания статьи, рекомендуемыми являются radix и redigo. Мы выберем redigo, так как он активно разрабатывается и имеет большее сообщество.
+
+Перейдём к нужному коду:
+
+git checkout step-8
+
+Заглянем в файле redis.go, в нём и будет наша имплементация хранилища Storage для Redis. Базовая структура достаточно проста:
+
+type RedisStorage struct {
+    BaseStorage
+    pool       *redis.Pool
+    prefix     string
+    cleanTimer *time.Timer
+}
+
+В pool будет хранится пул соединений к редису, в prefix — общий префикс для всех ключей. Для создания пула возьмём код из примеров redigo:
+
+func getPool(server string, password string) (pool *redis.Pool) {
+    pool = &redis.Pool{
+        MaxIdle:     3,
+        IdleTimeout: 240 * time.Second,
+        Dial: func() (redis.Conn, error) {
+            c, err := redis.Dial("tcp", server)
+            if err != nil {
+                return nil, err
+            }
+            if password != "" {
+                if _, err := c.Do("AUTH", password); err != nil {
+                    c.Close()
+                    return nil, err
+                }
+            }
+            return c, err
+        },
+        TestOnBorrow: func(c redis.Conn, _ time.Time) error {
+            _, err := c.Do("PING")
+            return err
+        },
+    }
+    return pool
+}
+
+В Dial мы передаём функцию, которая после соединения с сервером Redis, попытается авторизироваться, если указан пароль. После этого возвращается установленное соединение. Функция TestOnBorrow вызывается, когда соединение запрашивается из пула, в ней можно проверить соединение на жизнеспособность. Второй параметр, это время с момента возврата соединения в пул. Мы просто отправляем пинг каждый раз.
+
+Так же в пакете у нас объявлено несколько констант:
+
+const (
+    KEY_SEPARATOR    = "|" // разделитель ключей
+    BIN_KEY          = "bins" // ключ для хранения объектов Bin
+    REQUESTS_KEY     = "rq"  // ключ для хранения списка запросов
+    REQUEST_HASH_KEY = "rhsh" // ключ для хранения запросов в хэш таблице
+    CLEANING_SET	 = "cln" // множество, в котором будут хранится объекты Bin для очистки
+    CLEANING_FACTOR  = 3 // множитель превышения максимального количества запросов
+)
+
+Ключи у нас получаются вот по такому шаблону:
+
+func (storage *RedisStorage) getKey(keys ...string) string {
+    return fmt.Sprintf("%s%s%s", storage.prefix, KEY_SEPARATOR, strings.Join(keys, KEY_SEPARATOR))
+}
+
+
+Чтобы хранить наши данные в редисе, их нужно чем то сериализовать. Мы выберем популярный формат msgpack и воспользуемся популярной библиотекой codec. 
+
+Опишем методы, сериализующие всё что можно в бинарные данные и обратно:
+
+func (storage *RedisStorage) Dump(v interface{}) (data []byte, err error) {
+    var (
+        mh codec.MsgpackHandle
+        h  = &mh
+    )
+    err = codec.NewEncoderBytes(&data, h).Encode(v)
+    return
+}
+
+func (storage *RedisStorage) Load(data []byte, v interface{}) error {
+    var (
+        mh codec.MsgpackHandle
+        h  = &mh
+    )
+    return codec.NewDecoderBytes(data, h).Decode(v)
+}
+
+Опишем теперь другие методы.
+
+Cоздание объекта Bin
+
+func (storage *RedisStorage) UpdateBin(bin *Bin) (err error) {
+    dumpedBin, err := storage.Dump(bin)
+    if err != nil {
+        return
+    }
+    conn := storage.pool.Get()
+    defer conn.Close()
+    key := storage.getKey(BIN_KEY, bin.Name) 
+    conn.Send("SET", key, dumpedBin)
+    conn.Send("EXPIRE", key, storage.binLifetime)
+    conn.Flush()
+    return err
+}
+
+func (storage *RedisStorage) CreateBin(bin *Bin) error {
+    if err := storage.UpdateBin(bin); err != nil {
+        return err
+    }
+    return nil
+}
+
+
+Сначала мы сериализуем bin при помощи метода Dump. Потом берём соединение редиса из пула (не забывая его обязательно вернуть при помощи defer).
+Redigo поддерживает режим pipeline, мы можем добавить в буфер команду через метод Send, отправить все данные из буфера методом Flush и получить результат в Receive. Команда Do объединяет все три команды в одну. Так же можно реализовать транзакционность, подробнее в документации redigo.
+
+Мы отправляем две команды, «SET» чтобы сохранить данные Bin по его имени и Expire, чтобы установить время жизни этой записи.
+
+Получение объекта Bin
+
+func (storage *RedisStorage) LookupBin(name string) (bin *Bin, err error) {
+    conn := storage.pool.Get()
+    defer conn.Close()
+    reply, err := redis.Bytes(conn.Do("GET", storage.getKey(BIN_KEY, name)))
+    if err != nil {
+        if err == redis.ErrNil {
+            err = errors.New("Bin was not found")
+        }
+        return
+    }
+    err = storage.Load(reply, &bin)
+    return
+}
+
+Вспомогательный метод redis.Bytes пытается считать пришедший ответ от conn.Do в массив байтов. Если объект был не найден, редис возвратит специальный тип ошибки redis.ErrNil. Если всё прошло успешно, то данные загружаются в объект bin, переданный по ссылке в метод Load.
+
+Получения списка объектов Bin
+
+func (storage *RedisStorage) LookupBins(names []string) ([]*Bin, error) {
+    bins := []*Bin{}
+    if len(names) == 0 {
+        return bins, nil
+    }
+    args := redis.Args{}
+    for _, name := range names {
+        args = args.Add(storage.getKey(BIN_KEY, name))
+    }
+    conn := storage.pool.Get()
+    defer conn.Close()
+    if values, err := redis.Values(conn.Do("MGET", args...)); err == nil {
+        bytes := [][]byte{}
+        if err = redis.ScanSlice(values, &bytes); err != nil {
+            return nil, err
+        }
+        for _, rawbin := range bytes {
+            if len(rawbin) > 0 {
+                bin := &Bin{}
+                if err := storage.Load(rawbin, bin); err == nil {
+                    bins = append(bins, bin)
+                }
+            }
+        }
+        return bins, nil
+    } else {
+        return nil, err
+    }
+}
+
+Здесь почти всё тоже самое что и в предыдущем методе, за исключением того, что используется команда MGET для получения среза данных и вспомогательный метод redis.ScanSlice для загрузки ответа в слайс нужного типа.
+
+Создание запроса Request
+
+func (storage *RedisStorage) CreateRequest(bin *Bin, req *Request) (err error) {
+    data, err := storage.Dump(req)
+    if err != nil {
+        return
+    }
+    conn := storage.pool.Get()
+    defer conn.Close()
+    key := storage.getKey(REQUESTS_KEY, bin.Name)
+    conn.Send("LPUSH", key, req.Id)
+    conn.Send("EXPIRE", key, storage.binLifetime)
+    key = storage.getKey(REQUEST_HASH_KEY, bin.Name)
+    conn.Send("HSET", key, req.Id, data)
+    conn.Send("EXPIRE", key, storage.binLifetime)
+    conn.Flush()
+    requestCount, err := redis.Int(conn.Receive())
+    if err != nil {
+        return
+    }
+    if requestCount < storage.maxRequests {
+        bin.RequestCount = requestCount
+    } else {
+        bin.RequestCount = storage.maxRequests
+    }
+    bin.Updated = time.Now().Unix()
+    if requestCount > storage.maxRequests * CLEANING_FACTOR {
+        conn.Do("SADD", storage.getKey(CLEANING_SET), bin.Name)
+    }
+    if err = storage.UpdateBin(bin); err != nil {
+        return
+    }
+    return
+}
+
+Сначала мы сохраняем идентификатор запроса в список запросов для bin.Name, потом сохраняем сериализованный запрос в хеш таблицу. Не забываем в обоих случаях добавить время жизни. Команда LPUSH возвращает количество записей в списке requestCount, если это количество превысило максимальное, помноженное на фактор, то добавляем этот Bin в кандидаты на следующую очистку.
+
+Получения запроса и списка запросов сделано по аналогии с Bin объектами.
+
+Очистка
+
+func (storage *RedisStorage) clean() {
+    for {
+        conn := storage.pool.Get()
+        defer conn.Close()
+        binName, err := redis.String(conn.Do("SPOP", storage.getKey(CLEANING_SET)))
+        if err != nil {
+            break
+        }
+        conn.Send("LRANGE", storage.getKey(REQUESTS_KEY, binName), storage.maxRequests, -1)
+        conn.Send("LTRIM", storage.getKey(REQUESTS_KEY, binName), 0, storage.maxRequests-1)
+        conn.Flush()
+        if values, error := redis.Values(conn.Receive()); error == nil {
+            ids := []string{}
+            if err := redis.ScanSlice(values, &ids); err != nil {
+                continue
+            }
+            if len(ids) > 0 {
+                args := redis.Args{}.Add(storage.getKey(REQUEST_HASH_KEY, binName)).AddFlat(ids)
+                conn.Do("HDEL", args...)
+            }
+        }
+    }
+}
+
+В отличии от MemoryStorage, здесь мы очищаем избыточные запросы, так как время жизни ограничивается командой редиса EXPIRE. Сначала мы берём элемент из списка на очищение, запрашиваем идентификаторы запросов для него, не входящих в лимит, и командой LTRIM сжимаем список до нужного нам размера. Полученные ранее идентификаторы мы удаляем из хэш таблицы при помощи команды HDEL, принимающей сразу несколько ключей.
+
+Мы закончили описывать RedisStorage, рядом с ним, в файле redis_test.go вы найдёте так же и тесты.
+
+Теперь, добавим возможность выбирать хранилище при запуске нашего приложения, в файле api.go:
+
+type RedisConfig struct {
+    RedisAddr			string
+    RedisPassword		string
+    RedisPrefix			string
+}
+
+type Config struct {
+...
+    Storage				string
+    RedisConfig
+}
+
+func GetApi(config *Config) *martini.ClassicMartini {
+    var storage Storage
+    switch config.Storage{
+    case "redis":
+        redisStorage := NewRedisStorage(config.RedisAddr, config.RedisPassword, config.RedisPassword, MAX_REQUEST_COUNT, BIN_LIFETIME)
+        redisStorage.StartCleaning(60)
+        storage = redisStorage
+    default:
+        memoryStorage := NewMemoryStorage(MAX_REQUEST_COUNT, BIN_LIFETIME)
+        memoryStorage.StartCleaning(60)
+        storage = memoryStorage
+    }
+...
+
+Мы добавили новое поле Storage в нашу конфигурационную структуру и в зависимости от неё инициализурем либо RedisStorage либо MemoryStorage. Так же добавили конфигурацию RedisConfig, для специфических опций редиса.
+
+Так же внесём изменения в запускаемом файле main.go:
+import (
+    "skimmer"
+    "flag"
+)
+
+var (
+    config = skimmer.Config{
+        SessionSecret: "secret123",
+        RedisConfig: skimmer.RedisConfig{
+            RedisAddr: "127.0.0.1:6379",
+            RedisPassword: "",
+            RedisPrefix: "skimmer",
+        },
+    }
+)
+
+func init() {
+    flag.StringVar(&config.Storage, "storage", "memory", "available storages: redis, memory")
+    flag.StringVar(&config.SessionSecret, "sessionSecret", config.SessionSecret, "")
+    flag.StringVar(&config.RedisAddr, "redisAddr", config.RedisAddr, "redis storage only")
+    flag.StringVar(&config.RedisPassword, "redisPassword", config.RedisPassword, "redis storage only")
+    flag.StringVar(&config.RedisPrefix, "redisPrefix", config.RedisPrefix, "redis storage only")
+}
+
+func main() {
+    flag.Parse()
+    api := skimmer.GetApi(&config)
+    api.Run()
+}
+
+
+Мы будем использовать пакет flag, позволяющий легко и просто добавлять параметры запуска для программ. Добавим в функцию init флаг «storage», который будет сохранять значение прямо в наш config в поле Storage. Так же добавим опции запуска редиса.
+Функция init особенная для Go, она всегда выполняется при загрузке пакета. Подробнее про выполнение программ в Go.
+
+Теперь, запустив нашу программа с параметром --help, мы увидим список доступных параметров:
+
+> go run ./src/main.go --help
+Usage of .../main:
+  -redisAddr="127.0.0.1:6379": redis storage only
+  -redisPassword="": redis storage only
+  -redisPrefix="skimmer": redis storage only
+  -sessionSecret="secret123":
+  -storage="memory": available storages: redis, memory
+
+
+Теперь у нас есть приложение, пока ещё довольно сырое, и не оптимизированное, но уже готовое к работе и запуску на серверах.
+
+В третьей части мы поговорим о выкладке и запуске приложения в GAE, Cocaine и Heroku, а так же о том, как распространять его в виде одного исполняемого файла, содержащего все ресурсы. Будем писать тесты на производительность, параллельно занимаясь оптимизацией. Научимся проксировать запросы и отвечать нужными данным. И напоследок встроим распределённую базу данных groupcache прямо внутрь приложения.
+
+Буду рад любым правкам и предложениям по статье.
+go, martini
