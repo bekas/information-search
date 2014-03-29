@@ -23,6 +23,10 @@ namespace Clusterisation
             double dist = 0;
             foreach (var d1 in all)
             {
+                if (exist.Any(x => DistanceCos(x, d1) < 1.01 && DistanceCos(x, d1) > 0.99))
+                {
+                    continue;
+                }
                 double d = 0;
                 foreach (var d2 in exist)
                 {
@@ -100,7 +104,15 @@ namespace Clusterisation
             }
 
             var dist = d1 / (Math.Sqrt(d2) * Math.Sqrt(d3));
-            return dist;
+            if (dist > 0.0001)
+            {
+                return 1 / dist;
+            }
+            else
+            {
+                return 100000;
+            }
+            //return dist;
         }
 
         public bool NeedIteration { get; set; }

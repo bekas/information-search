@@ -92,9 +92,25 @@ namespace Shingler
         protected List<int> GetMinHashes(List<List<int>> hashes)
         {
             List<int> minHashes = new List<int>();
+            int hashNum = 0;
             foreach (var hash in hashes) 
             {
-                minHashes.Add(hash.Min());  
+                var min = hash.First();
+                int k = 0;
+                int shinMin = 0;
+
+                foreach (var sh in hash)
+                {
+                    if (min > sh)
+                    {
+                        min = sh;
+                        shinMin = k;
+                    }
+                    k++;
+                }
+                Console.WriteLine("Хеш#" + hashNum + " - шингл#" + shinMin);
+                hashNum++;
+                minHashes.Add(min);
             }
             return minHashes;
         }

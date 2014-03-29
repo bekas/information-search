@@ -1,0 +1,12 @@
+C:\Programming\inf search\lab2\Clusterisation\Clusterisation\bin\Debug\Clusterisation.exe.config
+C:\Programming\inf search\lab2\Clusterisation\Clusterisation\bin\Debug\Clusterisation.exe
+C:\Programming\inf search\lab2\Clusterisation\Clusterisation\bin\Debug\Clusterisation.pdb
+C:\Programming\inf search\lab2\Clusterisation\Clusterisation\obj\Debug\Clusterisation.csprojResolveAssemblyReference.cache
+C:\Programming\inf search\lab2\Clusterisation\Clusterisation\obj\Debug\Clusterisation.exe
+C:\Programming\inf search\lab2\Clusterisation\Clusterisation\obj\Debug\Clusterisation.pdb
+C:\Programming\inf search\Information search\information-search\lab2\Clusterisation\bin\Debug\Clusterisation.exe.config
+C:\Programming\inf search\Information search\information-search\lab2\Clusterisation\obj\Debug\Clusterisation.exe
+C:\Programming\inf search\Information search\information-search\lab2\Clusterisation\obj\Debug\Clusterisation.pdb
+C:\Programming\inf search\Information search\information-search\lab2\Clusterisation\bin\Debug\Clusterisation.exe
+C:\Programming\inf search\Information search\information-search\lab2\Clusterisation\bin\Debug\Clusterisation.pdb
+C:\Programming\inf search\Information search\information-search\lab2\Clusterisation\obj\Debug\Clusterisation.csprojResolveAssemblyReference.cache
